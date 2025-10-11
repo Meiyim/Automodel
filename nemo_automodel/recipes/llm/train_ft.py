@@ -155,6 +155,32 @@ def _is_hf_model(cfg_model):
     return architecture not in ModelRegistry.model_arch_name_to_cls
 
 
+def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=lambda n, p: 'bias' in n):
+    """
+    take from
+    https://github.com/NVIDIA-NeMo/NeMo/blob/52bfd8a161fab35a91f34fd651cab2269c83eb99/nemo/lightning/pytorch/optim/pytorch.py#L30-L31
+    """
+    params_with_wd, params_without_wd = [], []
+    if no_weight_decay_cond is not None:
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if no_weight_decay_cond(name, param):
+                params_without_wd.append(param)
+            else:
+                params_with_wd.append(param)
+    else:
+        params_with_wd = list(filter(lambda x: x.requires_grad, model.parameters()))
+
+    assert max(map(len, (params_with_wd, params_without_wd))) > 0, "Expected at least one optimizer with params"
+
+    return [
+        {'params': params, 'weight_decay': wd}
+        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0))
+    ]
+
+
+
 def build_model_and_optimizer(
     device,
     cfg_model,
@@ -352,9 +378,11 @@ def build_model_and_optimizer(
             assert len(trainable_params) > 0, "trainable_params cannot be empty"
             optimizer.append(cfg_opt.instantiate(params=trainable_params))
     else:
-        trainable_params = list(filter(lambda x: x.requires_grad, model.parameters()))
-        assert len(trainable_params) > 0, "trainable_params cannot be empty"
-        optimizer = [cfg_opt.instantiate(params=trainable_params)]
+        param_groups = _extract_model_params_for_optim(model, cfg_opt.weight_decay)
+        info = [len(pg['params']) for pg in param_groups]
+        logger.info(f'cut model into param groups, sizes={info}')
+        assert len(param_groups) > 0, "trainable_params cannot be empty"
+        optimizer = [cfg_opt.instantiate(params=param_groups)]
 
     return model, state_dict_keys, optimizer, loss_fn, param_info
 
@@ -478,8 +506,8 @@ def build_dataloader(
             ds = cfg_ds.instantiate(**kwargs)
             ds.build()
         else:
-            with FirstRankPerNode():
-                ds = cfg_ds.instantiate(**kwargs)
+            #with FirstRankPerNode():
+            ds = cfg_ds.instantiate(**kwargs)
 
         # If using an IterableDataset, per-rank sharding for unique samples
         if isinstance(ds, IterableDataset):
