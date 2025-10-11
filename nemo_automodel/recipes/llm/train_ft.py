@@ -132,6 +132,31 @@ def _get_num_thd_chunks(pp_enabled, cfg):
     return 1
 
 
+def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=lambda n, p: 'bias' in n):
+    """
+    take from
+    https://github.com/NVIDIA-NeMo/NeMo/blob/52bfd8a161fab35a91f34fd651cab2269c83eb99/nemo/lightning/pytorch/optim/pytorch.py#L30-L31
+    """
+    params_with_wd, params_without_wd = [], []
+    if no_weight_decay_cond is not None:
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if no_weight_decay_cond(name, param):
+                params_without_wd.append(param)
+            else:
+                params_with_wd.append(param)
+    else:
+        params_with_wd = list(filter(lambda x: x.requires_grad, model.parameters()))
+
+    assert max(map(len, (params_with_wd, params_without_wd))) > 0, "Expected at least one optimizer with params"
+
+    return [
+        {'params': params, 'weight_decay': wd}
+        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0))
+    ]
+
+
 def build_model(
     cfg_model,
     cfg_peft,
@@ -288,9 +313,6 @@ def build_optimizer(model, cfg_opt, distributed_config, device_mesh):
     optimizer = []
     has_dion_optimizer = is_dion_optimizer(cfg_opt)
     for part in getattr(model, "parts", [model]):
-        trainable_params = list(filter(lambda x: x.requires_grad, part.parameters()))
-        assert len(trainable_params) > 0, "trainable_params cannot be empty"
-        # TODO(@akoumparouli): no branching for building the optimizer, refactor.
         if has_dion_optimizer:
             tmp_optimizer = build_dion_optimizer(
                 cfg_opt=cfg_opt,
@@ -298,7 +320,11 @@ def build_optimizer(model, cfg_opt, distributed_config, device_mesh):
                 distributed_mesh=device_mesh,
             )
         else:
-            tmp_optimizer = cfg_opt.instantiate(params=trainable_params)
+            param_groups = _extract_model_params_for_optim(part, cfg_opt.weight_decay)
+            info = [len(pg['params']) for pg in param_groups]
+            logger.info(f'cut model into param groups, sizes={info}')
+            assert len(param_groups) > 0, "trainable_params cannot be empty"
+            tmp_optimizer = cfg_opt.instantiate(params=param_groups)
         if isinstance(distributed_config, MegatronFSDPConfig) and torch.distributed.get_world_size() > 1:
             assert not has_dion_optimizer, "Dion optimizer does not support fully_shard_optimizer"
             tmp_optimizer = fully_shard_optimizer(part, tmp_optimizer)
@@ -446,8 +472,8 @@ def build_dataloader(
             ds = cfg_ds.instantiate(**kwargs)
             ds.build()
         else:
-            with FirstRankPerNode():
-                ds = cfg_ds.instantiate(**kwargs)
+            #with FirstRankPerNode():
+            ds = cfg_ds.instantiate(**kwargs)
 
         # If using an IterableDataset, per-rank sharding for unique samples
         if isinstance(ds, IterableDataset):
