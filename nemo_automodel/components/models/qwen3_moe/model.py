@@ -107,7 +107,7 @@ class Qwen3MoeModel(nn.Module):
             n_expert_groups=0,
             n_limited_groups=0,
             train_gate=True,
-            gate_bias_update_factor=0.0,
+            gate_bias_update_factor=1e-3,
             score_func="softmax",  # Qwen3 uses softmax topk routing
             route_scale=1.0,
             aux_loss_coeff=getattr(config, "router_aux_loss_coef", 0.0),
@@ -122,6 +122,7 @@ class Qwen3MoeModel(nn.Module):
             config.vocab_size, config.hidden_size, dtype=get_dtype(config.torch_dtype, torch.bfloat16)
         )
         self.layers = torch.nn.ModuleDict()
+        print(f'build moe w/ config: {self.moe_config}')
         for layer_id in range(config.num_hidden_layers):
             self.layers[str(layer_id)] = Block(layer_id, config, self.moe_config, backend)
         self.norm = initialize_rms_norm_module(backend.rms_norm, config.hidden_size, eps=config.rms_norm_eps)
@@ -139,6 +140,13 @@ class Qwen3MoeModel(nn.Module):
             ntk_beta=32.0,
             device=torch.device(f"cuda:{torch.cuda.current_device()}"),
         )
+
+    def update_moe_gate_bias(self) -> None:
+        print(f'running gate update')
+        with torch.no_grad():
+            for _, block in self.layers.named_children():
+                if isinstance(block.mlp, MoE):
+                    block.mlp.gate.update_bias()
 
     def forward(
         self,
@@ -278,5 +286,10 @@ class Qwen3MoeForCausalLM(nn.Module, MoEFSDPSyncMixin):
             # Ensure rotary embedding uses correct device after dtype move
             self.model.rotary_emb.device = buffer_device
 
+    def update_moe_gate_bias(self) -> None:
+        with torch.no_grad():
+            for _, block in self.model.layers.named_children():
+                if isinstance(block.mlp, MoE):
+                    block.mlp.gate.update_bias()
 
 ModelClass = Qwen3MoeForCausalLM
