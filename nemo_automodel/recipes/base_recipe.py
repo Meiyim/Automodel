@@ -360,7 +360,8 @@ class BaseRecipe:
             if hasattr(opt, "synchronize_for_checkpoint"):
                 opt.synchronize_for_checkpoint()
         self.checkpointer.save_optimizer(optimizer, model, path, scheduler)
-        save_config(config.raw_config, path)
+        if dist.get_rank() == 0:
+            save_config(config.raw_config, path)
         if is_dist_initialized:
             torch.distributed.barrier()
 
