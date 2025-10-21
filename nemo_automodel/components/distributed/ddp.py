@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.distributed as dist
+from torch.distributed.device_mesh import init_device_mesh
+
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
@@ -76,6 +78,26 @@ class DDPManager:
             self.device = torch.device("cuda", index=local_gpu)
         else:
             self.device = torch.device("cpu")
+        self.device_mesh = self._get_device_mesh()
+        return self
+
+
+    def _get_device_mesh(self):
+        mesh_shape = (self.world_size, 1, 1, 1)
+        mesh_names = ("dp", "pp", "cp", "tp")
+        for shape, name in zip(mesh_shape, mesh_names):
+            assert isinstance(shape, int), "Expected {} to be an int, but got {}".format(name, type(shape))
+            assert shape > 0, "Expected {} > 0, {}".format(name, shape)
+
+        # build mesh [dp, cp, tp]
+        self.device_mesh = init_device_mesh(
+            device_type="cuda" if self.backend == "nccl" else "cpu",
+            mesh_shape=mesh_shape,
+            mesh_dim_names=mesh_names,
+        )
+        self.device_mesh[("dp", "cp")]._flatten(mesh_dim_name="dp_cp")
+        return self.device_mesh
+
 
     def parallelize(self, model):
         """

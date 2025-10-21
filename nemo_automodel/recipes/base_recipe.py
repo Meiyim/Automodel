@@ -220,7 +220,8 @@ class BaseRecipe:
 
         self.checkpointer.save_model(model, path, peft_config=self.peft_config, tokenizer=tokenizer)
         self.checkpointer.save_optimizer(optimizer, model, path, scheduler)
-        save_config(config.raw_config, path)
+        if dist.get_rank() == 0:
+            save_config(config.raw_config, path)
         if is_dist_initialized:
             torch.distributed.barrier()
 
