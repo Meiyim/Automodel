@@ -118,7 +118,7 @@ def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=
 
     return [
         {'params': params, 'weight_decay': wd}
-        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0))
+        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0)) if params
     ]
 
 
