@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
 import torch.nn as nn
+from torch import distributed as dist
 import wandb
 from huggingface_hub import constants as hf_constants
 from torch.utils.data import DataLoader, IterableDataset
@@ -57,7 +58,7 @@ from nemo_automodel.components.distributed.mesh import MeshContext
 from nemo_automodel.components.distributed.pipelining import AutoPipeline
 from nemo_automodel.components.distributed.utils import FirstRankPerNode, get_sync_ctx
 from nemo_automodel.components.loggers.log_utils import setup_logging
-from nemo_automodel.components.loggers.metric_logger import MetricsSample, build_metric_logger
+from nemo_automodel.components.loggers.metric_logger import MetricLoggerDist, MetricsSample, build_metric_logger
 from nemo_automodel.components.loggers.mlflow_utils import build_mlflow
 from nemo_automodel.components.loggers.wandb_utils import suppress_wandb_log_messages
 from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
@@ -1046,8 +1047,8 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
 
         restore_from = self.cfg.get("checkpoint.restore_from", None)
         # Initialize JSONL loggers
-        self.metric_logger_train = build_metric_logger(
-            pathlib.Path(self.checkpointer.config.checkpoint_dir) / "training.jsonl"
+        self.metric_logger_train = MetricLoggerDist(
+            pathlib.Path(self.checkpointer.config.checkpoint_dir) / f"training.{dist.get_rank()}.jsonl"
         )
         self.metric_logger_valid = {
             name: build_metric_logger(

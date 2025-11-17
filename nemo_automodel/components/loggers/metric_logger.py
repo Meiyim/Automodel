@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 
 import torch
 import torch.distributed as dist
-
+from tensorboardX.record_writer import directory_check, open_file
 
 @dataclass
 class MetricsSample:
@@ -90,15 +90,16 @@ class MetricLogger:
     - UTF-8 without BOM, newline per record.
     """
 
-    def __init__(self, filepath: str, *, flush: bool = False, append: bool = True, buffer_size: int = 100) -> None:
-        self.filepath = os.path.abspath(filepath)
+    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True, buffer_size: int = 1000) -> None:
+        self.filepath = str(filepath)
         self.flush = flush
         self.buffer_size = buffer_size
         self.buffer = []
         self._lock = threading.Lock()
-        os.makedirs(os.path.dirname(self.filepath) or ".", exist_ok=True)
         mode = "a" if append else "w"
-        self._fp = open(self.filepath, mode, encoding="utf-8")
+        if dist.get_rank() == 0:
+            directory_check(os.path.dirname(self.filepath))
+            self._fp = open_file(self.filepath)
 
     def log(self, record: MetricsSample) -> None:
         self.buffer.append(record)
@@ -118,10 +119,11 @@ class MetricLogger:
     def _save(self, lines: List[str]) -> None:
         if len(lines) == 0:
             return
-        self._fp.write("\n".join(lines) + "\n")
+        string = "\n".join(lines) + "\n"
+        self._fp.write(string.encode('utf-8'))
         if self.flush:
             self._fp.flush()
-            os.fsync(self._fp.fileno())
+            #os.fsync(self._fp.fileno())
 
     def close(self) -> None:
         with self._lock:
@@ -143,7 +145,7 @@ class MetricLogger:
 
 
 class MetricLoggerDist(MetricLogger):
-    def __init__(self, filepath: str, *, flush: bool = False, append: bool = True) -> None:
+    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True) -> None:
         super().__init__(filepath, flush=flush, append=append)
         assert dist.is_initialized(), "torch.distributed must be initialized with MetricLoggerDist"
         self.rank = dist.get_rank()
