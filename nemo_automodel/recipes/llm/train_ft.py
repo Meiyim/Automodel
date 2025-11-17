@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
+from torch import distributed as dist
 import wandb
 from torch.distributed.device_mesh import DeviceMesh
 from torch.utils.data import DataLoader, IterableDataset
@@ -1074,7 +1075,7 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         restore_from = self.cfg.get("checkpoint.restore_from", None)
         # Initialize JSONL loggers
         self.metric_logger_train = MetricLoggerDist(
-            pathlib.Path(self.checkpointer.config.checkpoint_dir) / "training.jsonl"
+            pathlib.Path(self.checkpointer.config.checkpoint_dir) / f"training.{dist.get_rank()}.jsonl"
         )
         self.metric_logger_valid = {
             name: MetricLoggerDist(
