@@ -90,9 +90,8 @@ class MetricLogger:
     - UTF-8 without BOM, newline per record.
     """
 
-    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True, buffer_size: int = 1000) -> None:
+    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True, buffer_size: int = 100) -> None:
         self.filepath = str(filepath)
-        self.flush = flush
         self.buffer_size = buffer_size
         self.buffer = []
         self._lock = threading.Lock()
@@ -122,21 +121,15 @@ class MetricLogger:
             return
         string = "\n".join(lines) + "\n"
         self._fp.write(string.encode('utf-8'))
-        if self.flush:
-            self._fp.flush()
-            #os.fsync(self._fp.fileno())
+        self._fp.flush()
+        if hasattr(self._fp, 'fileno'):
+            os.fsync(self._fp.fileno())
 
     def close(self) -> None:
         with self._lock:
             self._save(self._move_to_cpu(self.buffer))
-            try:
-                self._fp.flush()
-            except Exception:
-                pass
-            try:
-                self._fp.close()
-            except Exception:
-                pass
+            self._fp.flush()
+            self._fp.close()
 
     def __enter__(self) -> "MetricLogger":
         return self
@@ -146,8 +139,8 @@ class MetricLogger:
 
 
 class MetricLoggerDist(MetricLogger):
-    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True) -> None:
-        super().__init__(filepath, flush=flush, append=append)
+    def __init__(self, filepath: str, *, flush: bool = True, append: bool = True, buffer_size=100) -> None:
+        super().__init__(filepath, flush=flush, append=append, buffer_size=buffer_size)
         assert dist.is_initialized(), "torch.distributed must be initialized with MetricLoggerDist"
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
