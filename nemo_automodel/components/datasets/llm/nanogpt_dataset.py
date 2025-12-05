@@ -233,24 +233,28 @@ def _get_start_end_pos_single_file(total_tokens: int, total_workers: int, global
     return file_start_pos, file_end_pos
 
 
-def _get_worker_id_and_total_workers(worker: get_worker_info) -> tuple[int, int]:
+def _get_worker_id_and_total_workers(
+    worker: get_worker_info, dist_world_size: int = None, dist_rank: int = None
+) -> tuple[int, int]:
     """
     Get the total number of workers.
     """
     # Determine the *global* worker id taking both DDP rank and DataLoader
     # worker id into account so that every worker processes a disjoint
     # subset of shards.
-    try:
-        import torch.distributed as dist
+    if not dist_world_size:
+        try:
+            import torch.distributed as dist
 
-        dist_world_size = dist.get_world_size() if dist.is_initialized() else 1
-        dist_rank = dist.get_rank() if dist.is_initialized() else 0
-    except Exception:
-        dist_world_size = 1
-        dist_rank = 0
+            dist_world_size = dist.get_world_size() if dist.is_initialized() else 1
+            dist_rank = dist.get_rank() if dist.is_initialized() else 0
+        except Exception:
+            dist_world_size = 1
+            dist_rank = 0
 
     dl_num_workers = worker.num_workers if worker is not None else 1
     dl_worker_id = worker.id if worker is not None else 0
+    print(f"dist: {dist_world_size} x dl-worker: {dl_num_workers}")
 
     total_workers = dist_world_size * dl_num_workers
     global_worker_id = dist_rank * dl_num_workers + dl_worker_id
@@ -313,8 +317,16 @@ class NanogptDataset(IterableDataset):
         if self.align_to_bos and bos_token is None:
             raise ValueError("bos_token must be provided when align_to_bos is True")
         self.bos_token = bos_token
+        self.num_shards = 999999
 
-    def _setup_worker_context(self, files, shuffle) -> tuple[List[str], random.Random, bool, int, int]:
+    def shard(self, dp_size: int, dp_rank: int):
+        self.dp_size = dp_size
+        self.dp_rank = dp_rank
+        return self
+
+    def _setup_worker_context(
+        self, files, shuffle, dist_world_size, dist_rank
+    ) -> tuple[List[str], random.Random, bool, int, int]:
         """
         Set up worker-specific context including file assignment and splitting parameters.
 
@@ -330,7 +342,10 @@ class NanogptDataset(IterableDataset):
         else:
             rng.seed(os.getpid())
 
-        global_worker_id, total_workers = _get_worker_id_and_total_workers(worker)
+        global_worker_id, total_workers = _get_worker_id_and_total_workers(
+            worker, dist_world_size=dist_world_size, dist_rank=dist_rank
+        )
+        print(f"nanogpt ds sharding {global_worker_id}/{total_workers}")
         # Slice the file list so that each global worker gets roughly equal number of shards.
         worker_files = files[global_worker_id::total_workers].copy()
         if not worker_files:
@@ -442,7 +457,7 @@ class NanogptDataset(IterableDataset):
             Dictionary containing 'input_ids' and 'labels' for training
         """
         worker_files, rng, split_single_file, file_start_pos, file_end_pos = self._setup_worker_context(
-            self.files, self.shuffle_files
+            self.files, self.shuffle_files, dist_world_size=self.dp_size, dist_rank=self.dp_rank
         )
 
         yield from self._get_file_iterator(worker_files, rng, split_single_file, file_start_pos, file_end_pos)

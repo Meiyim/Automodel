@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
-from torch import distributed as dist
 import wandb
+from torch import distributed as dist
 from torch.distributed.device_mesh import DeviceMesh
 from torch.utils.data import DataLoader, IterableDataset
 from torchao.float8 import precompute_float8_dynamic_scale_for_fsdp
@@ -54,7 +54,7 @@ from nemo_automodel.components.distributed.init_utils import (
 )
 from nemo_automodel.components.distributed.megatron_fsdp import MegatronFSDPManager
 from nemo_automodel.components.distributed.pipelining import AutoPipeline
-from nemo_automodel.components.distributed.utils import FirstRankPerNode, get_sync_ctx
+from nemo_automodel.components.distributed.utils import get_sync_ctx
 from nemo_automodel.components.loggers.log_utils import setup_logging
 from nemo_automodel.components.loggers.metric_logger import MetricLoggerDist, MetricsSample
 from nemo_automodel.components.loggers.mlflow_utils import build_mlflow
@@ -156,7 +156,7 @@ def _is_hf_model(cfg_model):
     return architecture not in ModelRegistry.model_arch_name_to_cls
 
 
-def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=lambda n, p: 'bias' in n):
+def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=lambda n, p: "bias" in n):
     """
     take from
     https://github.com/NVIDIA-NeMo/NeMo/blob/52bfd8a161fab35a91f34fd651cab2269c83eb99/nemo/lightning/pytorch/optim/pytorch.py#L30-L31
@@ -176,10 +176,10 @@ def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=
     assert max(map(len, (params_with_wd, params_without_wd))) > 0, "Expected at least one optimizer with params"
 
     return [
-        {'params': params, 'weight_decay': wd}
-        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0)) if params
+        {"params": params, "weight_decay": wd}
+        for params, wd in zip((params_with_wd, params_without_wd), (weight_decay, 0))
+        if params
     ]
-
 
 
 def build_model_and_optimizer(
@@ -380,8 +380,8 @@ def build_model_and_optimizer(
             optimizer.append(cfg_opt.instantiate(params=trainable_params))
     else:
         param_groups = _extract_model_params_for_optim(model, cfg_opt.weight_decay)
-        info = [len(pg['params']) for pg in param_groups]
-        logger.info(f'cut model into param groups, sizes={info}')
+        info = [len(pg["params"]) for pg in param_groups]
+        logger.info(f"cut model into param groups, sizes={info}")
         assert len(param_groups) > 0, "trainable_params cannot be empty"
         optimizer = [cfg_opt.instantiate(params=param_groups)]
 
@@ -507,24 +507,25 @@ def build_dataloader(
             ds = cfg_ds.instantiate(**kwargs)
             ds.build()
         else:
-            #with FirstRankPerNode():
+            # with FirstRankPerNode():
             ds = cfg_ds.instantiate(**kwargs)
 
         # If using an IterableDataset, per-rank sharding for unique samples
+        logger.info(f"using ds:{type(ds)}, isins={isinstance(ds, IterableDataset)}")
         if isinstance(ds, IterableDataset):
             try:
                 if ds.num_shards >= dp_world_size:
                     ds = ds.shard(dp_world_size, dp_rank)
-                    logging.info(
+                    logger.info(
                         f"Sharded IterableDataset via dataset.shard: world_size={dp_world_size}, rank={dp_rank}"
                     )
                 else:
                     from datasets.distributed import split_dataset_by_node
 
                     ds.dataset = split_dataset_by_node(ds.dataset, world_size=dp_world_size, rank=dp_rank)
-                    logging.info(f"Sharded dataset via split_dataset_by_node: world_size={dp_world_size}")
+                    logger.info(f"Sharded dataset via split_dataset_by_node: world_size={dp_world_size}")
             except Exception as e:
-                logging.warning(f"IterableDataset sharding skipped due to error: {e}")
+                logger.info(f"IterableDataset sharding skipped due to error: {e}")
 
         packed_sequence_size = getattr(cfg_ps, "packed_sequence_size", 0)
         # check if packed sequence is supported
@@ -641,6 +642,7 @@ def build_dataloader(
                 mp.set_start_method("spawn", force=True)
         except RuntimeError:
             pass
+        logger.info(f"instantiate dl w/ kwargs:{dl_kwargs}")
         return cfg_dl.instantiate(**dl_kwargs), tokenizer
 
 
@@ -700,7 +702,7 @@ def build_lr_scheduler(cfg, optimizer, step_scheduler) -> list[OptimizerParamSch
 
     # Calculate total steps for the training run
     total_epochs = step_scheduler.num_epochs
-    epoch_len = len(step_scheduler.dataloader)
+    epoch_len = step_scheduler.epoch_len or 99999999  # acount for iterbale dataset
     grad_acc_steps = step_scheduler.grad_acc_steps
 
     # Total optimizer steps (accounting for gradient accumulation)
