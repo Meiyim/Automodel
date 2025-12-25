@@ -560,6 +560,15 @@ def build_dataloader(
                 world_size=dp_world_size,
             )
             dl_kwargs = {"batch_sampler": batch_sampler}
+        elif hasattr(ds, 'build_batch_sampler'):
+            batch_sampler = ds.build_batch_sampler(
+                local_batch_size=local_batch_size,
+                global_batch_size=global_batch_size,
+                rank=dp_rank,
+                world_size=dp_world_size,                
+            )
+            dl_kwargs = {"batch_sampler": batch_sampler}
+            logger.info(f'building customed dataeset... {dp_rank}/{dp_world_size}')
         elif not isinstance(ds, IterableDataset):
             shuffle = cfg_dl.get("shuffle", True)
             if "shuffle" in cfg_dl:
@@ -699,12 +708,15 @@ def build_lr_scheduler(cfg, optimizer, step_scheduler) -> list[OptimizerParamSch
         return None
 
     # Calculate total steps for the training run
-    total_epochs = step_scheduler.num_epochs
-    epoch_len = len(step_scheduler.dataloader)
-    grad_acc_steps = step_scheduler.grad_acc_steps
+    try:
+        total_epochs = step_scheduler.num_epochs
+        epoch_len = len(step_scheduler.dataloader)
+        grad_acc_steps = step_scheduler.grad_acc_steps
+        # Total optimizer steps (accounting for gradient accumulation)
+        total_steps = (total_epochs * epoch_len) // grad_acc_steps
+    except Exception:
+        total_steps = 99999999999
 
-    # Total optimizer steps (accounting for gradient accumulation)
-    total_steps = (total_epochs * epoch_len) // grad_acc_steps
     if step_scheduler.max_steps is not None:
         total_steps = min(total_steps, step_scheduler.max_steps)
 
