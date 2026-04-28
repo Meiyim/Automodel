@@ -506,10 +506,13 @@ def get_check_model_inputs_decorator():
     try:
         from transformers.utils.generic import check_model_inputs
 
-        if is_transformers_min_version("4.57.3"):
+        try:
             # New API: check_model_inputs() returns a decorator
-            return check_model_inputs()
-        else:
+            result = check_model_inputs()
+            if callable(result):
+                return result
+            return check_model_inputs
+        except TypeError:
             # Old API: check_model_inputs is directly a decorator
             return check_model_inputs
     except ImportError:
