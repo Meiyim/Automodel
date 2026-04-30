@@ -879,6 +879,7 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         self.rng = StatefulRNG(seed=self.cfg.get("seed", 42), ranked=True)
         # Enable NVTX patching only when explicitly requested in config
         self.enable_nvtx = bool(self.cfg.get("nvtx", False))
+        self.perf_timer = bool(self.cfg.get("perf_timer", False))
 
         self.dist_setup = setup_distributed(self.cfg, world_size=self.dist_env.world_size)
         self.distributed_config = self.dist_setup.strategy_config
@@ -1130,6 +1131,7 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         for mp in self.model_parts:
             mp.train()
         self.timestamp = time.perf_counter()
+        self._perf_ts = self.timestamp
 
         for epoch in self.step_scheduler.epochs:
             self.step_scheduler.set_epoch(epoch)
@@ -1268,6 +1270,12 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
                 if is_train:
                     (local_loss * self._get_dp_group_size(include_cp=True)).backward()
 
+    def _perf_mark(self):
+        if not self.perf_timer:
+            return 0.0
+        torch.cuda.synchronize()
+        return time.perf_counter()
+
     def _run_train_optim_step(self, batches, max_grad_norm: Optional[float] = None):
         """Execute a single training step.
 
@@ -1275,6 +1283,8 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
             batches: List of batches of training data.
             max_grad_norm: Gradient clipping norm. Optional, if None will not clip gradients.
         """
+        _t0 = self._perf_mark()
+        _t_data = _t0 - self._perf_ts if self.perf_timer else 0.0
 
         num_label_tokens = torch.tensor(
             sum((batch["labels"] != -100).sum().item() for batch in batches), dtype=torch.long
@@ -1292,6 +1302,8 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         num_batches = len(batches)
         prepare_for_grad_accumulation(self.model_parts, pp_enabled=self.pp_enabled)
 
+        _t1 = self._perf_mark()
+
         for i, batch in enumerate(batches):
             if i == num_batches - 1:
                 prepare_for_final_backward(self.model_parts, pp_enabled=self.pp_enabled)
@@ -1302,6 +1314,8 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
 
             if i == 0:
                 prepare_after_first_microbatch()
+
+        _t2 = self._perf_mark()
 
         grad_norm = scale_grads_and_clip_grad_norm(
             max_grad_norm,
@@ -1316,6 +1330,8 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
             num_label_tokens=num_label_tokens,
             dp_group_size=self._get_dp_group_size(include_cp=True),
         )
+
+        _t3 = self._perf_mark()
 
         # Note(MegatronFSDP): Need to call these functions for MegatronFSDP if not using latest api
         # self.model_parts[0].finish_grad_sync()
@@ -1349,6 +1365,10 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         # self.model_parts[0].install_optimized_model_weights()
         # self.model_parts[0].zero_grad_buffer()
 
+        _t4 = self._perf_mark()
+        if self.perf_timer:
+            self._perf_ts = _t4
+
         t = time.perf_counter()
         time_delta = t - self.timestamp
         self.timestamp = t
@@ -1368,19 +1388,26 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
         reporting_loss = reporting_loss.cpu().item()
         # fix reporting_loss, tps across ranks
 
+        metrics = {
+            "loss": reporting_loss,
+            "grad_norm": grad_norm,
+            "lr": self.optimizer[0].param_groups[0]["lr"],
+            "mem": torch.cuda.max_memory_allocated() / 1024**3,
+            "tps": tps,
+            "tps_per_gpu": tps / self._get_cp_group_size() / max(self._get_dp_group_size(), 1),
+            "num_tokens_per_step": num_tokens_in_batch,
+            "num_label_tokens": num_label_tokens,
+        }
+        if self.perf_timer:
+            metrics["t_data"] = _t_data
+            metrics["t_fwdbwd"] = _t2 - _t1
+            metrics["t_grad"] = _t3 - _t2
+            metrics["t_optim"] = _t4 - _t3
+
         return MetricsSample(
             step=self.step_scheduler.step,
             epoch=self.step_scheduler.epoch,
-            metrics={
-                "loss": reporting_loss,
-                "grad_norm": grad_norm,
-                "lr": self.optimizer[0].param_groups[0]["lr"],
-                "mem": torch.cuda.max_memory_allocated() / 1024**3,
-                "tps": tps,
-                "tps_per_gpu": tps / self._get_cp_group_size() / max(self._get_dp_group_size(), 1),
-                "num_tokens_per_step": num_tokens_in_batch,
-                "num_label_tokens": num_label_tokens,
-            },
+            metrics=metrics,
         )
 
     @torch.no_grad()
@@ -1518,6 +1545,15 @@ class TrainFinetuneRecipeForNextTokenPrediction(BaseRecipe):
                 log_data.metrics["num_label_tokens"],
             )
         )
+        if "t_data" in log_data.metrics:
+            logging.info(
+                "  perf | t_data {:.3f}s | t_fwdbwd {:.3f}s | t_grad {:.3f}s | t_optim {:.3f}s".format(
+                    log_data.metrics["t_data"],
+                    log_data.metrics["t_fwdbwd"],
+                    log_data.metrics["t_grad"],
+                    log_data.metrics["t_optim"],
+                )
+            )
         torch.cuda.reset_peak_memory_stats()
 
 
