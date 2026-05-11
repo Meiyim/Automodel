@@ -579,9 +579,11 @@ class Checkpointer:
             path: Path to load stateful object
         """
         state_dir = os.path.join(path, state_name)
-        state.load_state_dict(
-            torch.load(os.path.join(state_dir, f"{state_name}_dp_rank_{self.dp_rank}.pt"), weights_only=False)
-        )
+        pt_path = os.path.join(state_dir, f"{state_name}_dp_rank_{self.dp_rank}.pt")
+        if not os.path.exists(pt_path):
+            logging.warning(f"Checkpoint state file not found, skipping: {pt_path}")
+            return
+        state.load_state_dict(torch.load(pt_path, weights_only=False))
 
     def close(self) -> None:
         """
