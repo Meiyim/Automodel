@@ -228,12 +228,13 @@ def load_model_from_base_checkpoint(
             if hasattr(module, "_is_hf_initialized"):
                 module._is_hf_initialized = False
 
-        # init model weights
-        if hasattr(model, "initialize_weights"):
-            model.initialize_weights()
+        # init model weights; init_weights() calls initialize_weights() then tie_weights(),
+        # restoring lm_head/embed_tokens weight tying broken by FSDP2 fully_shard().
+        if hasattr(model, "init_weights"):
+            model.init_weights()
         else:
             logging.warning(
-                "Warning: Model does not have initialize_weights method. Requires custom initialization to be implemented."
+                "Warning: Model does not have init_weights method. Requires custom initialization to be implemented."
             )
 
     # init peft adapters with the scaled weights
