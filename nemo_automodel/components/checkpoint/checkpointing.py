@@ -479,11 +479,11 @@ class Checkpointer:
                 if hasattr(module, "_is_hf_initialized"):
                     module._is_hf_initialized = False
 
-            if hasattr(model, "initialize_weights"):
-                model.initialize_weights()
+            if hasattr(model, "init_weights"):
+                model.init_weights()
             else:
                 logging.warning(
-                    "Warning: Model does not have initialize_weights method. Requires custom initialization to be implemented."
+                    "Warning: Model does not have init_weights method. Requires custom initialization to be implemented."
                 )
 
         if peft_init_method is not None:
