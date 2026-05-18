@@ -84,11 +84,11 @@ class NemotronV3Model(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, dtype=dtype)
 
         # Transformer layers (hybrid: mamba, attention, mlp, moe)
-        self.layers = nn.ModuleDict()
+        self.layers = nn.ModuleList()
         for idx in range(config.num_hidden_layers):
-            self.layers[str(idx)] = NemotronV3Block(
+            self.layers.append(NemotronV3Block(
                 config, layer_idx=idx, moe_config=self.moe_config, backend=self.backend
-            )
+            ))
 
         # Final norm
         self.norm = initialize_rms_norm_module(
@@ -132,7 +132,7 @@ class NemotronV3Model(nn.Module):
         causal_mask = causal_mask_mapping.get("full_attention") if causal_mask_mapping is not None else None
 
         # Apply transformer layers
-        for layer in self.layers.values():
+        for layer in self.layers:
             # Pass appropriate mask based on layer type
             if layer.block_type == "attention":
                 # Attention layers use 4D causal mask
@@ -164,7 +164,7 @@ class NemotronV3Model(nn.Module):
             self.norm.reset_parameters()
 
         # Initialize all layers via delegation
-        for block in self.layers.values():
+        for block in self.layers:
             block.init_weights(buffer_device=buffer_device)
 
 
@@ -240,6 +240,10 @@ class NemotronHForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
             dtype=dtype,
         )
 
+        # Tie lm_head weights to embedding if configured
+        if getattr(config, "tie_word_embeddings", False):
+            self.lm_head.weight = self.model.embed_tokens.weight
+
         # Create state_dict_adapter if enabled (needed to convert HF checkpoints)
         if self.backend.enable_hf_state_dict_adapter:
             self.state_dict_adapter = NemotronV3StateDictAdapter(
@@ -248,6 +252,11 @@ class NemotronHForCausalLM(HFCheckpointingMixin, nn.Module, MoEFSDPSyncMixin):
                 backend=self.backend,
                 dtype=dtype,
             )
+
+    @property
+    def backbone(self):
+        """Alias for FSDP parallelizer compatibility (expects model.backbone.layers)."""
+        return self.model
 
     def forward(
         self,
